@@ -784,6 +784,24 @@ describe('MSSQL SchemaBuilder', function () {
     );
   });
 
+  it('adds foreign key onDelete cascade', function () {
+    tableSql = client
+      .schemaBuilder()
+      .createTable('person_random', function (table) {
+        table
+          .integer('account_id')
+          .notNull()
+          .references('id')
+          .inTable('accounts')
+          .onDelete('cascade');
+      })
+      .toSQL();
+    equal(1, tableSql.length);
+    expect(tableSql[0].sql).to.equal(
+      'CREATE TABLE [person] ([user_id] int not null, [account_id] int not null, CONSTRAINT [person_user_id_foreign] FOREIGN KEY ([user_id]) REFERENCES [users] ([id]) ON DELETE SET NULL, CONSTRAINT [person_account_id_foreign] FOREIGN KEY ([account_id]) REFERENCES [accounts] ([id]) ON UPDATE cascade)'
+    );
+  });
+
   it('test adding incrementing id', function () {
     tableSql = client
       .schemaBuilder()

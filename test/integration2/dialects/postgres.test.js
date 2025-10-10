@@ -64,6 +64,15 @@ describe.only('Postgres dialect', () => {
         const r = await k;
         console.log(r, 'r');
       });
+
+      // https://github.com/knex/knex/issues/4070 
+      xit('Should correctly map json key & value in JSONB raw SQL', async () => {
+        const k = knex2('users').having('some_relation_count', '>', 0).del()
+
+        // console.log({ toSQL: k.toSQL(), toQuery: k.toQuery() });
+        const r = await k;
+        console.log(r, 'r');
+      });
     });
   });
 });
