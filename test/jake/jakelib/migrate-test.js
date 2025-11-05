@@ -98,7 +98,7 @@ test('run migrations without knexfile and with --migrations-table-name', (temp) 
           )
         )
     )
-    .then((row) => assert.equal(row.name, 'custom_migrations_table')));
+    .then((row) => assert.strictEqual(row.name, 'custom_migrations_table')));
 
 test('migrate:latest prints non verbose logs', (temp) => {
   const db = knexfile.connection.filename;

@@ -5,7 +5,7 @@ let tableSql;
 const PG_Client = require('../../../lib/dialects/cockroachdb');
 const client = new PG_Client({ client: 'pg' });
 
-const equal = require('chai').assert.equal;
+const equal = require('chai').assert.strictEqual;
 
 describe('CockroachDB SchemaBuilder', function () {
   it('create table with uuid primary key in one go', function () {
