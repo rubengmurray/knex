@@ -36,40 +36,9 @@ const logger = require('../../../integration/logger');
 const { insertAccounts } = require('../../../util/dataInsertHelper');
 const sinon = require('sinon');
 const { setHiddenProperty } = require('../../../../lib/util/security');
-
-const MySQLSleepCommand = (knex, time) => knex.raw('SELECT SLEEP(?)', time);
-const getPostgresSleepCommand = (knex, time) => knex.raw('SELECT pg_sleep(?)', time);
-
-const setupSleepTestQueries = (knex, time) => {
-  const postgresSleepCommand = getPostgresSleepCommand(knex, time);
-
-  return {
-    [drivers.PostgreSQL]: function () {
-      return postgresSleepCommand;
-      // return knex.raw('SELECT pg_sleep(10)');
-    },
-    [drivers.CockroachDB]: function () {
-      // return knex.raw('SELECT pg_sleep(10)');
-      // NOTE: Why do we return this for cockroach db?
-      return postgresSleepCommand;
-    },
-    [drivers.PgNative]: function () {
-      return postgresSleepCommand;
-    },
-    [drivers.MySQL]: function () {
-      return knex.raw('SELECT SLEEP(10)');
-    },
-    [drivers.MySQL2]: function () {
-      return knex.raw('SELECT SLEEP(10)');
-    },
-    [drivers.MsSQL]: function () {
-      return knex.raw("WAITFOR DELAY '00:00:10'");
-    },
-    [drivers.Oracle]: function () {
-      return knex.raw('begin dbms_lock.sleep(10); end;');
-    },
-  };
-}
+const { setupSleepTestQueries } = require('./helpers/timeout.helpers');
+const { getPostgresSleepCommand } = require('./helpers/postgres.helpers');
+const { MySQLSleepCommand } = require('./helpers/mysql.helpers');
 
 describe.only('Additional', function () {
   getAllDbs().forEach((db) => {
@@ -789,7 +758,7 @@ describe.only('Additional', function () {
         });
       });
 
-      describe('timeouts', () => {
+      describe.only('timeouts', () => {
         const isDriverInvalidForTimeout = (knex) =>
           isSQLite(knex) || isRedshift(knex)
 
@@ -854,6 +823,7 @@ describe.only('Additional', function () {
         const shouldSkipCancel = (knex) => isDriverInvalidForTimeout(knex) || isCockroachDB(knex);
 
         it('.timeout(ms, {cancel: true}) should throw TimeoutError and cancel slow query', async function () {
+          const driverName = knex.client.driverName;
           // NOTE: Implies Cockroach supports timeout, but not cancel, but cancel:false is nothing to do with the DB driver.
           if (shouldSkipCancel(knex)) {
             console.info(`Skipping as ${driverName} does not support timeout`)
@@ -893,7 +863,6 @@ describe.only('Additional', function () {
 
           const testQueries = setupSleepTestQueries(knex, 10)
 
-          const driverName = knex.client.driverName;
           if (!Object.prototype.hasOwnProperty.call(testQueries, driverName)) {
             throw new Error('Missing test query for driverName: ' + driverName);
           }
