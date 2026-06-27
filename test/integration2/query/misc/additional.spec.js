@@ -133,6 +133,53 @@ describe.only('Additional', function () {
           });
         });
 
+        it('should emit an error on the stream when postProcessResponse throws (#6032)', async function () {
+          await knex('accounts').truncate();
+          await insertAccounts(knex, 'accounts');
+
+          const original = knex.client.config.postProcessResponse;
+          knex.client.config.postProcessResponse = () => {
+            throw new Error('postProcessResponse boom');
+          };
+
+          try {
+            const stream = knex('accounts').limit(1).stream();
+            const error = await new Promise((resolve) => {
+              stream.on('error', resolve);
+              stream.on('data', () => {});
+            });
+            expect(error).to.be.an('error');
+            expect(error.message).to.equal('postProcessResponse boom');
+          } finally {
+            knex.client.config.postProcessResponse = original;
+          }
+        });
+
+        it('should emit an error rather than crash when the stream cannot acquire a connection (#6460)', async function () {
+          const limitedKnex = getKnexForDb(db, {
+            acquireConnectionTimeout: 200,
+            pool: { min: 0, max: 1 },
+          });
+          const heldConnection = await limitedKnex.client.acquireConnection();
+          try {
+            const stream = limitedKnex.raw('SELECT 1').stream();
+            let error;
+            try {
+              // eslint-disable-next-line no-unused-vars
+              for await (const _ of stream) {
+                //
+              }
+            } catch (e) {
+              error = e;
+            }
+            expect(error).to.be.an('error');
+            await new Promise((res) => setTimeout(res, 50));
+          } finally {
+            await limitedKnex.client.releaseConnection(heldConnection);
+            await limitedKnex.destroy();
+          }
+        });
+
         it('should release the connection when a stream query iteration errors', async function () {
           const spy = sinon.spy(knex.client, 'releaseConnection');
 
@@ -358,6 +405,7 @@ describe.only('Additional', function () {
 
         it('should allow raw queries directly with `knex.raw`', async function () {
           const tables = {
+            [drivers.MariaDB]: 'SHOW TABLES',
             [drivers.MySQL]: 'SHOW TABLES',
             [drivers.MySQL2]: 'SHOW TABLES',
             [drivers.CockroachDB]:
@@ -398,6 +446,7 @@ describe.only('Additional', function () {
         it('should allow using .fn.uuid to create raw statements', function () {
           const expectedStatement = {
             [drivers.MsSQL]: '(NEWID())',
+            [drivers.MariaDB]: '(UUID())',
             [drivers.MySQL]: '(UUID())',
             [drivers.MySQL2]: '(UUID())',
             [drivers.Oracle]: '(random_uuid())',
@@ -787,6 +836,9 @@ describe.only('Additional', function () {
             [drivers.MySQL]: function () {
               return MySQLSleepCommand(1);
             },
+            [drivers.MySQL]: function () {
+              return MySQLSleepCommand(1);
+            },
             [drivers.MySQL2]: function () {
               return MySQLSleepCommand(1);
             },
@@ -897,6 +949,9 @@ describe.only('Additional', function () {
             [drivers.PgNative]: function () {
               return postgresProcessesQuery
             },
+            [drivers.MariaDB]: function () {
+              return knex.raw('SHOW PROCESSLIST');
+            },
             [drivers.MySQL]: function () {
               return MySQLProcessesQuery
             },
@@ -914,7 +969,7 @@ describe.only('Additional', function () {
             throw new Error('Missing test query for driverName: ' + driverName);
           }
 
-          const getProcessesQuery = getProcessesQueries[driverName]();
+          const getProcessesQuery = getProcessesQueries[driverName];
 
           try {
             await addTimeout();
@@ -932,7 +987,7 @@ describe.only('Additional', function () {
             // too early.
             // 50ms delay since killing query doesn't seem to have immediate effect to the process listing
             await delay(50);
-            const results = await getProcessesQuery;
+            const results = await getProcessesQuery();
 
             let processes;
             let sleepProcess;
@@ -991,6 +1046,9 @@ describe.only('Additional', function () {
             [drivers.PgNative]: function () {
               return knex.raw('SELECT * from pg_stat_activity');
             },
+            [drivers.MariaDB]: function () {
+              return knex.raw('SHOW PROCESSLIST');
+            },
             [drivers.MySQL]: function () {
               return knex.raw('SHOW PROCESSLIST');
             },
@@ -1008,7 +1066,7 @@ describe.only('Additional', function () {
             throw new Error('Missing test query for driverName: ' + driverName);
           }
 
-          const getProcessesQuery = getProcessesQueries[driverName]();
+          const getProcessesQuery = getProcessesQueries[driverName];
 
           try {
             await knex.transaction((trx) => addTimeout().transacting(trx));
@@ -1026,7 +1084,7 @@ describe.only('Additional', function () {
             // too early.
             // 50ms delay since killing query doesn't seem to have immediate effect to the process listing
             await delay(50);
-            const results = await getProcessesQuery;
+            const results = await getProcessesQuery();
             let processes;
             let sleepProcess;
 
@@ -1102,6 +1160,10 @@ describe.only('Additional', function () {
                 'query'
               );
             },
+            [drivers.MariaDB]: async () => {
+              const results = await knex.raw('SHOW PROCESSLIST');
+              return _.map(results[0], 'Info');
+            },
             [drivers.MySQL]: async () => {
               const results = await knex.raw('SHOW PROCESSLIST');
               return _.map(results[0], 'Info');
@@ -1127,9 +1189,17 @@ describe.only('Additional', function () {
             const promise = query
               .timeout(50, { cancel: true })
               .then(_.identity);
+            let processesBeforeTimeout = [];
+            let i = 0;
 
-            await delay(15);
-            const processesBeforeTimeout = await getProcesses();
+            do {
+              await delay(10);
+              processesBeforeTimeout = await getProcesses();
+            } while (
+              !processesBeforeTimeout.includes(query.toString()) &&
+              i++ < 4
+            );
+
             expect(processesBeforeTimeout).to.include(query.toString());
 
             await expect(promise).to.eventually.be.rejected.and.to.deep.include(
@@ -1178,8 +1248,12 @@ describe.only('Additional', function () {
               `SELECT pg_sleep(${sleepSeconds})`,
             [drivers.PgNative]: (sleepSeconds) =>
               `SELECT pg_sleep(${sleepSeconds})`,
-            [drivers.MySQL]: (sleepSeconds) => `SELECT SLEEP(${sleepSeconds})`,
-            [drivers.MySQL2]: (sleepSeconds) => `SELECT SLEEP(${sleepSeconds})`,
+            [drivers.MySQL]: (sleepSeconds) =>
+              `SELECT SLEEP(${sleepSeconds}) -- four ${driverName}`,
+            [drivers.MySQL2]: (sleepSeconds) =>
+              `SELECT SLEEP(${sleepSeconds}) -- four ${driverName}`,
+            [drivers.MariaDB]: (sleepSeconds) =>
+              `SELECT SLEEP(${sleepSeconds}) -- four ${driverName}`,
           };
 
           const driverName = knex.client.driverName;
