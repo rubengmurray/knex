@@ -36,8 +36,11 @@ const logger = require('../../../integration/logger');
 const { insertAccounts } = require('../../../util/dataInsertHelper');
 const sinon = require('sinon');
 const { setHiddenProperty } = require('../../../../lib/util/security');
+const { setupSleepTestQueries } = require('./helpers/timeout.helpers');
+const { getPostgresSleepCommand } = require('./helpers/postgres.helpers');
+const { MySQLSleepCommand } = require('./helpers/mysql.helpers');
 
-describe('Additional', function () {
+describe.only('Additional', function () {
   getAllDbs().forEach((db) => {
     describe(db, () => {
       let knex;
@@ -804,35 +807,40 @@ describe('Additional', function () {
         });
       });
 
-      describe('timeouts', () => {
+      describe.only('timeouts', () => {
+        const isDriverInvalidForTimeout = (knex) =>
+          isSQLite(knex) || isRedshift(knex)
+
         it('.timeout() should throw TimeoutError', async function () {
           const driverName = knex.client.driverName;
-          if (isSQLite(knex)) {
-            return this.skip();
-          } //TODO -- No built-in support for sleeps
 
-          if (isRedshift(knex)) {
+          //TODO -- No built-in support for sleeps
+          if (isDriverInvalidForTimeout(knex)) {
+            console.info(`Skipping as ${driverName} does not support timeout`)
             return this.skip();
           }
 
+          // Note: Why is CockroachDB using postgres syntax?
           const testQueries = {
             [drivers.CockroachDB]: function () {
-              return knex.raw('SELECT pg_sleep(1)');
+              // return knex.raw('SELECT pg_sleep(1)');
+              // TODO: Why do we run the PG command for cockroach db?
+              return getPostgresSleepCommand(1);
             },
             [drivers.PostgreSQL]: function () {
-              return knex.raw('SELECT pg_sleep(1)');
+              return getPostgresSleepCommand(1);
             },
             [drivers.PgNative]: function () {
-              return knex.raw('SELECT pg_sleep(1)');
-            },
-            [drivers.MariaDB]: function () {
-              return knex.raw('SELECT SLEEP(1)');
+              return getPostgresSleepCommand(1);
             },
             [drivers.MySQL]: function () {
-              return knex.raw(`SELECT SLEEP(1) -- zero ${driverName}`);
+              return MySQLSleepCommand(1);
+            },
+            [drivers.MySQL]: function () {
+              return MySQLSleepCommand(1);
             },
             [drivers.MySQL2]: function () {
-              return knex.raw(`SELECT SLEEP(1) -- zero ${driverName}`);
+              return MySQLSleepCommand(1);
             },
             [drivers.MsSQL]: function () {
               return knex.raw("WAITFOR DELAY '00:00:01'");
@@ -849,6 +857,7 @@ describe('Additional', function () {
           const query = testQueries[driverName]();
 
           try {
+            // TODO: Use await (expect) here for better assertion
             await query.timeout(200);
           } catch (error) {
             expect(_.pick(error, 'timeout', 'name', 'message')).to.deep.equal({
@@ -859,50 +868,53 @@ describe('Additional', function () {
             });
             return;
           }
+          // Remove this failsafe assertion in favour of improved expect assertion.
           expect(true).to.equal(false);
         });
 
+        const shouldSkipCancel = (knex) => isDriverInvalidForTimeout(knex) || isCockroachDB(knex);
+
         it('.timeout(ms, {cancel: true}) should throw TimeoutError and cancel slow query', async function () {
-          if (isSQLite(knex) || isCockroachDB(knex)) {
-            return this.skip();
-          } //TODO -- No built-in support for sleeps
-          if (isRedshift(knex)) {
+          const driverName = knex.client.driverName;
+          // NOTE: Implies Cockroach supports timeout, but not cancel, but cancel:false is nothing to do with the DB driver.
+          if (shouldSkipCancel(knex)) {
+            console.info(`Skipping as ${driverName} does not support timeout`)
             return this.skip();
           }
+
+          // NOTE: Docs say this is MySQL & Postgres only, but the test includes other drivers.
 
           // There's unexpected behavior caused by knex releasing a connection back
           // to the pool because of a timeout when a long query is still running.
           // A subsequent query will acquire the connection (still in-use) and hang
           // until the first query finishes. Setting a sleep time longer than the
           // mocha timeout exposes this behavior.
-          const testQueries = {
-            [drivers.PostgreSQL]: function () {
-              return knex.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.CockroachDB]: function () {
-              return knex.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.PgNative]: function () {
-              return knex.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.MariaDB]: function () {
-              return knex.raw('SELECT SLEEP(10)');
-            },
-            [drivers.MySQL]: function () {
-              return knex.raw(`SELECT SLEEP(10) -- one ${driverName}`);
-            },
-            [drivers.MySQL2]: function () {
-              return knex.raw(`SELECT SLEEP(10) -- one ${driverName}`);
-            },
-            [drivers.MsSQL]: function () {
-              return knex.raw("WAITFOR DELAY '00:00:10'");
-            },
-            [drivers.Oracle]: function () {
-              return knex.raw('begin dbms_lock.sleep(10); end;');
-            },
-          };
+          // const testQueries = {
+          //   [drivers.PostgreSQL]: function () {
+          //     return knex.raw('SELECT pg_sleep(10)');
+          //   },
+          //   [drivers.CockroachDB]: function () {
+          //     return knex.raw('SELECT pg_sleep(10)');
+          //   },
+          //   [drivers.PgNative]: function () {
+          //     return knex.raw('SELECT pg_sleep(10)');
+          //   },
+          //   [drivers.MySQL]: function () {
+          //     return knex.raw('SELECT SLEEP(10)');
+          //   },
+          //   [drivers.MySQL2]: function () {
+          //     return knex.raw('SELECT SLEEP(10)');
+          //   },
+          //   [drivers.MsSQL]: function () {
+          //     return knex.raw("WAITFOR DELAY '00:00:10'");
+          //   },
+          //   [drivers.Oracle]: function () {
+          //     return knex.raw('begin dbms_lock.sleep(10); end;');
+          //   },
+          // };
 
-          const driverName = knex.client.driverName;
+          const testQueries = setupSleepTestQueries(knex, 10)
+
           if (!Object.prototype.hasOwnProperty.call(testQueries, driverName)) {
             throw new Error('Missing test query for driverName: ' + driverName);
           }
@@ -921,24 +933,30 @@ describe('Additional', function () {
             this.skip();
           }
 
+          const getPostgresProcessesQuery = () => knex.raw('SELECT * from pg_stat_activity');
+          const getMySQLProcessesQuery = () => knex.raw('SHOW PROCESSLIST');
+
+          const postgresProcessesQuery = getPostgresProcessesQuery(knex);
+          const MySQLProcessesQuery = getMySQLProcessesQuery(knex);
+
           const getProcessesQueries = {
             [drivers.CockroachDB]: function () {
               return knex.raw('SELECT * FROM [SHOW CLUSTER STATEMENTS]');
             },
             [drivers.PostgreSQL]: function () {
-              return knex.raw('SELECT * from pg_stat_activity');
+              return postgresProcessesQuery
             },
             [drivers.PgNative]: function () {
-              return knex.raw('SELECT * from pg_stat_activity');
+              return postgresProcessesQuery
             },
             [drivers.MariaDB]: function () {
               return knex.raw('SHOW PROCESSLIST');
             },
             [drivers.MySQL]: function () {
-              return knex.raw('SHOW PROCESSLIST');
+              return MySQLProcessesQuery
             },
             [drivers.MySQL2]: function () {
-              return knex.raw('SHOW PROCESSLIST');
+              return MySQLProcessesQuery
             },
           };
 
@@ -988,10 +1006,7 @@ describe('Additional', function () {
         });
 
         it('.timeout(ms, {cancel: true}) should throw TimeoutError and cancel slow query in transaction', async function () {
-          if (isSQLite(knex) || isCockroachDB(knex)) {
-            return this.skip();
-          } //TODO -- No built-in support for sleeps
-          if (isRedshift(knex)) {
+          if (shouldSkipCancel(knex)) {
             return this.skip();
           }
 
@@ -1000,32 +1015,7 @@ describe('Additional', function () {
           // A subsequent query will acquire the connection (still in-use) and hang
           // until the first query finishes. Setting a sleep time longer than the
           // mocha timeout exposes this behavior.
-          const testQueries = {
-            [drivers.CockroachDB]: function () {
-              return 'SELECT pg_sleep(10)';
-            },
-            [drivers.PostgreSQL]: function () {
-              return 'SELECT pg_sleep(10)';
-            },
-            [drivers.PgNative]: function () {
-              return 'SELECT pg_sleep(10)';
-            },
-            [drivers.MariaDB]: function () {
-              return 'SELECT SLEEP(10)';
-            },
-            [drivers.MySQL]: function () {
-              return `SELECT SLEEP(10) -- two ${driverName}`;
-            },
-            [drivers.MySQL2]: function () {
-              return `SELECT SLEEP(10) -- two ${driverName}`;
-            },
-            [drivers.MsSQL]: function () {
-              return "WAITFOR DELAY '00:00:10'";
-            },
-            [drivers.Oracle]: function () {
-              return 'begin dbms_lock.sleep(10); end;';
-            },
-          };
+          const testQueries = setupSleepTestQueries(knex, 10)
 
           const driverName = knex.client.driverName;
           if (!Object.prototype.hasOwnProperty.call(testQueries, driverName)) {
@@ -1043,7 +1033,7 @@ describe('Additional', function () {
             expect(addTimeout).to.throw(
               'Query cancelling not supported for this dialect'
             );
-            return; // TODO: Use `this.skip()` here?
+            return;
           }
 
           const getProcessesQueries = {
@@ -1136,32 +1126,7 @@ describe('Additional', function () {
 
           const knexDb = new Knex(knexConfig);
 
-          const testQueries = {
-            [drivers.CockroachDB]: function () {
-              return knexDb.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.PostgreSQL]: function () {
-              return knexDb.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.PgNative]: function () {
-              return knexDb.raw('SELECT pg_sleep(10)');
-            },
-            [drivers.MariaDB]: function () {
-              return knexDb.raw('SELECT SLEEP(10)');
-            },
-            [drivers.MySQL]: function () {
-              return knexDb.raw(`SELECT SLEEP(10) -- three ${driverName}`);
-            },
-            [drivers.MySQL2]: function () {
-              return knexDb.raw(`SELECT SLEEP(10) -- three ${driverName}`);
-            },
-            [drivers.MsSQL]: function () {
-              return knexDb.raw("WAITFOR DELAY '00:00:10'");
-            },
-            [drivers.Oracle]: function () {
-              return knexDb.raw('begin dbms_lock.sleep(10); end;');
-            },
-          };
+          const testQueries = setupSleepTestQueries(knex, 10)
 
           const driverName = knex.client.driverName;
           if (!Object.prototype.hasOwnProperty.call(testQueries, driverName)) {
