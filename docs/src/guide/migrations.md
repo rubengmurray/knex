@@ -340,10 +340,9 @@ exports.config = { transaction: false };
 
 If you are making DDL / schema changes to MySQL tables you should be aware that a sudden failure does not rollback any successful schema changes made in the same migration file.
 
-This is because MySQL uses an `Implicit Commit` for many schema related commands changes. 
+This is because MySQL uses an `Implicit Commit` for many schema related commands changes.
 
 Example:
-
 
 ```typescript
 export const up = async (knex: Knex): Promise<void> => {
@@ -361,10 +360,7 @@ export const up = async (knex: Knex): Promise<void> => {
 
 In this case, the migration will error and won't be classed as complete, but you will be left with `my_table` in your database.
 
-*For a full list of MySQL `implicit commit` commands see: https://dev.mysql.com/doc/refman/9.7/en/implicit-commit.html*
-
-
-
+_For a full list of MySQL `implicit commit` commands see: https://dev.mysql.com/doc/refman/9.7/en/implicit-commit.html_
 
 ### make
 
